@@ -8,65 +8,46 @@ import werkzeug
 from flask import Flask, render_template, redirect, url_for, request, send_from_directory, flash, get_flashed_messages
 from flask_login import LoginManager, UserMixin, login_user, login_required, current_user, logout_user
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlalchemy import Integer, String, Float
 from werkzeug.security import generate_password_hash
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.exc import IntegrityError
-from flask import flash, redirect, url_for, request, render_template
-import re 
-from flask import Flask, render_template, request
-from flask import Flask, render_template, request
-
+import re
 
 load_dotenv()
 
-
-class Base(DeclarativeBase):
-    pass
-
-
-db = SQLAlchemy(model_class=Base)
 app = Flask(__name__)
 app.config['SECRET_KEY'] = '3f8c2e7a9b4d12f7c6a8e9f1b2d3c4e5f6a7b8c9d0e1f2a3b4c5d6e7f8g9h0i1'
 app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///users.db"
-db.init_app(app)
+db = SQLAlchemy(app)
 login_manager = LoginManager()
 login_manager.init_app(app)
-
 
 # user_loader callback
 @login_manager.user_loader
 def load_user(user_id):
-    return db.get_or_404(User, user_id)
-
+    return db.session.get(User, int(user_id))
 
 class User(UserMixin, db.Model):
-    id: Mapped[int] = mapped_column(primary_key=True)
-    username: Mapped[str] = mapped_column(unique=True, nullable=False)
-    email: Mapped[str] = mapped_column(unique=True, nullable=False)
-    password: Mapped[str] = mapped_column(unique=False, nullable=False)
-
+    __tablename__ = "user"
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String, unique=True, nullable=False)
+    email = db.Column(db.String, unique=True, nullable=False)
+    password = db.Column(db.String, nullable=False)
+    recovery_codes = db.relationship('RecoveryCode', back_populates='user', lazy=True)
 
 class RecoveryCode(db.Model):
+    __tablename__ = "recovery_code"
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     code = db.Column(db.String(50), nullable=False, unique=True)
     expiry_time = db.Column(db.DateTime, nullable=False)
-
     user = db.relationship('User', back_populates='recovery_codes')
-
-
-User.recovery_codes = db.relationship('RecoveryCode', back_populates='user', lazy=True)
 
 with app.app_context():
     db.create_all()
 
-
 @app.route('/')
 def index():
     return render_template("index.html")
-
 
 @app.route('/register', methods=['GET', 'POST'])
 def register():
@@ -119,8 +100,8 @@ def login():
         if user:
             if werkzeug.security.check_password_hash(user.password, password):
                 login_user(user)
-                flash("Login successful!", "success")  # Store the success message
-                return redirect(url_for("secretz"))  # Redirect to the next page
+                flash("Login successful!", "success")
+                return redirect(url_for("secretz"))
             else:
                 flash("Password is incorrect!", "error")
         else:
@@ -149,34 +130,24 @@ def send_recovery_email(to_email, code):
     except Exception as e:
         print(f"Error sending email: {e}")
 
-
 @app.route('/forgetpassword', methods=['GET', 'POST'])
 def forgetpassword():
     if request.method == "POST":
         email = request.form.get("email")
         user = User.query.filter_by(email=email).first()
-        
+
         if user:
-            # Generate a 4-byte hex recovery code
             code = secrets.token_hex(4)
             expiry_time = datetime.utcnow() + timedelta(minutes=15)
-
-            # Store recovery code in the database
             recovery_code = RecoveryCode(user_id=user.id, code=code, expiry_time=expiry_time)
             db.session.add(recovery_code)
             db.session.commit()
-
-            # Send recovery email
             send_recovery_email(user.email, code)
-
             flash(f"A recovery code has been sent to your email! {email}","success")
-            return redirect(url_for('reset_password'))  # Redirect to reset password page
-
+            return redirect(url_for('reset_password'))
         else:
             flash("Invalid email. Please enter a registered email.", "error")
-
     return render_template("forget.html")
-    
 
 @app.route('/reset_password', methods=['GET', 'POST'])
 def reset_password():
@@ -185,36 +156,27 @@ def reset_password():
         code = request.form.get("code")
         new_password = request.form.get("password")
 
-        print(email, code, new_password)
-
-        # Check if the email exists
         user = User.query.filter_by(email=email).first()
         if not user:
             flash("Invalid email. Please enter a registered email.", "error")
             return redirect(url_for('reset_password'))
 
-        # Check if recovery code exists and is still valid
         recovery_code = RecoveryCode.query.filter_by(user_id=user.id, code=code).first()
         if not recovery_code or recovery_code.expiry_time < datetime.utcnow():
             flash("Invalid or expired recovery code. Request a new one.", "error")
             return redirect(url_for('reset_password'))
 
-        # Validate password strength
         if len(new_password) < 8 or not any(char.isdigit() for char in new_password) or not any(char.isupper() for char in new_password):
             flash("Password must be at least 8 characters long, contain an uppercase letter and a number.", "error")
             return redirect(url_for('reset_password'))
 
-        # Update user password
         hash_password = generate_password_hash(new_password, method='pbkdf2:sha256:600000', salt_length=8)
         user.password = hash_password
-        db.session.delete(recovery_code)  # Delete used recovery code
+        db.session.delete(recovery_code)
         db.session.commit()
-
         flash("Your password has been updated successfully!", "success")
         return redirect(url_for('login'))
-
     return render_template("reset_password.html")
-
 
 @app.route('/secret', methods=['GET', 'POST'])
 @login_required
@@ -222,38 +184,29 @@ def secretz():
     messages = get_flashed_messages(with_categories=True)
     return render_template("secret.html", username=current_user.username)
 
-
 @app.route('/logout')
 def logout():
     logout_user()
     return redirect(url_for("login"))
 
-
 @app.route('/download', methods=['GET'])
 @login_required
 def download():
-    if request.method == "GET":
-        return send_from_directory('static', 'Drug report.pdf')
-
+    return send_from_directory('static', 'Drug report.pdf')
 
 @app.route("/", methods=["GET", "POST"])
 def home():
     reviews = []
     drug_name = ""
-
     if request.method == "POST":
         drug_name = request.form["drug_name"].strip()
-        reviews = analyze_reviews(drug_name)
-
-    return render_template("screte.html", drug=drug_name, reviews=reviews)
-
+        
+    return render_template("screte.html")
 
 @app.route('/', methods=['GET'])
 def secret():
     """Display the input form"""
     return render_template('secret.html')
-
-
 
 if __name__ == '__main__':
     app.run(debug=True, port=5001)
